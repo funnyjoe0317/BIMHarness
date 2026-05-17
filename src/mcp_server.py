@@ -14,7 +14,11 @@ Claude Desktop, MCP Inspector 등 표준 AI 클라이언트에서 BIM 도구 호
   npx @modelcontextprotocol/inspector python -m src.mcp_server  # Inspector
 """
 
+import contextlib
+import functools
+import io
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +44,37 @@ mcp = FastMCP("bimharness")
 
 
 # ============================================
+# stdout 오염 방지
+# MCP는 stdout으로 JSON-RPC만 통신해야 함.
+# 우리 에이전트들이 사용하는 print()는 stderr로 리다이렉트.
+# ============================================
+
+@contextlib.contextmanager
+def _silence_stdout():
+    """도구 실행 중 stdout 출력을 stderr로 보냄"""
+    old_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+
+
+def silent(func):
+    """@mcp.tool() 데코된 함수에 추가로 적용: 내부 print를 stderr로"""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _silence_stdout():
+            return func(*args, **kwargs)
+    return wrapper
+
+
+# ============================================
 # 도구 1: list_rules
 # ============================================
 
 @mcp.tool()
+@silent
 def list_rules(rules_md_path: str) -> dict:
     """자연어 룰셋 파일에서 룰 목록을 추출합니다.
 
@@ -68,6 +99,7 @@ def list_rules(rules_md_path: str) -> dict:
 # ============================================
 
 @mcp.tool()
+@silent
 def validate_ifc(
     ifc_path: str,
     rules_compiled_path: str = "samples/rules_compiled.json",
@@ -105,6 +137,7 @@ def validate_ifc(
 # ============================================
 
 @mcp.tool()
+@silent
 def compile_rules(
     rules_md_path: str,
     output_path: str = "samples/rules_compiled.json",
@@ -141,6 +174,7 @@ def compile_rules(
 # ============================================
 
 @mcp.tool()
+@silent
 def apply_fixes(
     ifc_path: str,
     violations_path: str = "samples/violations.json",
@@ -188,6 +222,7 @@ def apply_fixes(
 # ============================================
 
 @mcp.tool()
+@silent
 def generate_report(
     violations_path: str = "samples/violations.json",
     changes_log_path: str = "samples/changes.log.json",
@@ -228,6 +263,7 @@ def generate_report(
 # ============================================
 
 @mcp.tool()
+@silent
 def run_full_pipeline(
     ifc_path: str,
     rules_md_path: str,
@@ -264,6 +300,7 @@ def run_full_pipeline(
 # ============================================
 
 @mcp.tool()
+@silent
 def ai_agent_mode(
     ifc_path: str,
     rules_compiled_path: str = "samples/rules_compiled.json",
@@ -317,6 +354,7 @@ def ai_agent_mode(
 # ============================================
 
 @mcp.tool()
+@silent
 def ai_react_agent(
     ifc_path: str,
     output_ifc_path: str = None,
