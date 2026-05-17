@@ -223,10 +223,10 @@ def _apply_material_change(ifc, guid: str, fix_spec: dict) -> dict:
             material=new_material
         )
 
-        # 3. 색깔 추가 (옵션) — 자재 representation
+        # 3. 색깔 추가 (옵션) — element 표현에 IfcStyledItem 연결
         if color_rgb and len(color_rgb) >= 3:
             try:
-                _set_material_color(ifc, new_material, color_rgb)
+                _set_element_color(ifc, element, color_rgb, name_hint=new_material_name)
             except Exception:
                 pass  # 색은 best-effort
 
@@ -240,40 +240,61 @@ def _apply_material_change(ifc, guid: str, fix_spec: dict) -> dict:
 
 
 def _set_material_color(ifc, material, rgb):
-    """IfcMaterial에 IfcSurfaceStyle 색상 추가"""
+    """레거시 함수 — 호환용. 실제 시각화는 _set_element_color 사용."""
+    pass
+
+
+def _set_element_color(ifc, element, rgb, name_hint="Color"):
+    """element의 RepresentationItem에 색 IfcStyledItem 연결 (Navisworks/BIM Vision 시각화)"""
+    import ifcopenshell.api
     r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
-    # 0~255 범위면 0~1로 정규화
     if r > 1 or g > 1 or b > 1:
         r, g, b = r/255, g/255, b/255
 
-    # IfcColourRgb
-    color = ifc.create_entity("IfcColourRgb", None, r, g, b)
-    rendering = ifc.create_entity(
-        "IfcSurfaceStyleRendering",
-        color, 0.0, None, None, None, None, None, None, "NOTDEFINED"
+    if not hasattr(element, "Representation") or element.Representation is None:
+        return False
+
+    style = ifcopenshell.api.run("style.add_style", ifc, name=f"{name_hint}_RGB")
+    ifcopenshell.api.run(
+        "style.add_surface_style", ifc,
+        style=style,
+        ifc_class="IfcSurfaceStyleShading",
+        attributes={"SurfaceColour": {"Name": None, "Red": r, "Green": g, "Blue": b}},
     )
-    style = ifc.create_entity("IfcSurfaceStyle", material.Name + "_Style", "BOTH", [rendering])
-    # 자재에 styled 연결은 별도 IfcStyledItem 필요 — 단순화
+    for rep in element.Representation.Representations:
+        ifcopenshell.api.run(
+            "style.assign_representation_styles", ifc,
+            shape_representation=rep, styles=[style],
+        )
+    return True
 
 
 def _apply_geometry_change(ifc, guid: str, fix_spec: dict) -> dict:
-    """형상 변경 — 벽 두께 (IfcRectangleProfileDef.YDim)"""
+    """형상 변경 — 벽 두께 (IfcRectangleProfileDef.YDim)
+
+    fix_spec.value는 mm 기준. IFC 단위(피트/m 등)에 맞춰 자동 변환.
+    """
     element = ifc.by_guid(guid)
     if element is None:
         return {"status": "error", "reason": f"GUID 없음: {guid}"}
 
     target_field = fix_spec.get("field", "thickness")
-    new_value = (
+    new_value_mm = (
         fix_spec.get("value")
         or fix_spec.get("default_value")
     )
-    if new_value is None:
+    if new_value_mm is None:
         return {"status": "error", "reason": "새 값 누락"}
 
     try:
-        new_value = float(new_value)
+        new_value_mm = float(new_value_mm)
     except (TypeError, ValueError):
-        return {"status": "error", "reason": f"숫자 변환 실패: {new_value}"}
+        return {"status": "error", "reason": f"숫자 변환 실패: {new_value_mm}"}
+
+    # IFC 단위 → mm 변환 (LargeBuilding은 unit_scale=0.001, PacificResidence는 0.3048)
+    import ifcopenshell.util.unit
+    unit_scale = ifcopenshell.util.unit.calculate_unit_scale(ifc)  # 1 IFC unit = N meters
+    new_value = new_value_mm / 1000.0 / unit_scale  # mm → IFC 단위
 
     try:
         # element의 형상 탐색

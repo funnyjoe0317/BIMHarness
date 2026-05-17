@@ -2,3 +2,4 @@ anthropic==0.100.0
 ifcopenshell==0.8.5
 python-dotenv==1.2.2
 tqdm==4.67.3
+mcp==1.27.1

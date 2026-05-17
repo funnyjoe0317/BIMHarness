@@ -40,8 +40,11 @@ rules.md (자연어)           SimpleWall.ifc
 
 - **자연어 룰** — `.md` 파일에 한국어로 룰 작성, Claude가 JSON으로 컴파일
 - **5 에이전트 분업** — Parser · Interpreter · Validator · AutoFix · Reporter
+- **AI Agent + Tools 패턴** — Claude가 IFC 분석/위반 판단/수정 결정, Python 도구가 IFC 조작
+- **MCP 서버** — Claude Desktop, Cursor 등 표준 AI 클라이언트에서 자연어로 BIM 작업 호출
 - **안전한 자동 수정** — 화이트리스트 정책 (`pset_set_value`, `set_attribute`, `material_change`, `geometry_change`)
-- **시각 변화** — IfcMaterial + RGB 색 + 형상 두께 자동 적용
+- **단위 자동 변환** — IFC 단위(mm/피트/m)에 맞춰 수치 자동 변환
+- **시각 변화** — IfcMaterial + RGB 색 + 형상 두께 자동 적용 (Navisworks/BIM Vision 확인 가능)
 - **SHA-256 무결성 검증** — 모든 변경은 로그 + 해시로 추적
 - **비용 절감** — `--skip-compile`로 컴파일 결과 캐시 재사용
 
@@ -91,6 +94,87 @@ bimsample/report.md              ← 한국어 보고서
 
 ---
 
+## 🤖 AI Agent 모드
+
+Claude가 IFC를 직접 분석하고 위반/수정을 판단합니다. Python은 도구로 동작.
+
+```bash
+.venv/bin/python -m src.agents.agent_ai bimsample/SimpleWall.ifc
+```
+
+출력 예:
+```
+📦 [Python] IFC 요약 추출 중...
+   벽 1개, 단위 mm
+   룰 11개 로드
+
+💬 [Claude] IFC 분석 + 위반 판단 중... (API 호출 1번)
+💬 Claude 분석: 외벽 1개에서 화재등급 미설정, 두께 부족, 자재 미지정 확인
+💬 Claude 결정: 3건 수정 명령
+   - R_F3: FireRating "_FIRE-RATING_" → "2HR"
+   - R_F11: 두께 200mm → 500mm
+   - R_F9: 자재 미지정 → "Concrete"
+
+🔧 [Python] 3개 결정 실행 중...
+   성공: 3/3
+
+📝 [Claude] 한국어 보고서 작성 중... (API 호출 1번)
+```
+
+흐름:
+1. Python이 IFC 요약 추출
+2. **Claude API #1**: 위반 판단 + 수정 명령 (JSON 응답)
+3. Python 도구가 결정대로 IFC 조작
+4. **Claude API #2**: 한국어 보고서 자연어 작성
+
+---
+
+## 🔌 MCP 서버 (Model Context Protocol)
+
+BIMHarness를 Claude Desktop, Cursor 등 표준 AI 클라이언트에서 호출할 수 있습니다.
+
+```bash
+# MCP 서버 실행 (stdio)
+.venv/bin/python -m src.mcp_server
+
+# MCP Inspector로 도구 테스트
+npx @modelcontextprotocol/inspector .venv/bin/python -m src.mcp_server
+```
+
+노출된 도구 7개:
+| 도구 | 설명 |
+|------|------|
+| `list_rules` | 자연어 룰셋에서 룰 목록 추출 |
+| `compile_rules` | 자연어 룰 → JSON 컴파일 (Claude) |
+| `validate_ifc` | IFC를 컴파일된 룰셋으로 검증 |
+| `apply_fixes` | 위반 사항 자동 수정 |
+| `generate_report` | 한국어 보고서 생성 |
+| `run_full_pipeline` | 전체 파이프라인 한 번에 실행 |
+| `ai_agent_mode` | AI Agent + Tools 모드 (Claude가 의사결정) |
+
+### Claude Desktop 등록 (선택)
+
+`claude_desktop_config.json`에 추가:
+```json
+{
+  "mcpServers": {
+    "bimharness": {
+      "command": "/path/to/BIMHarness/.venv/bin/python",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "/path/to/BIMHarness",
+      "env": {
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+등록 후 Claude Desktop 채팅창에서 자연어로 호출:
+> "samples/SimpleWall.ifc를 화재 안전 룰로 검사하고 수정해줘"
+
+---
+
 ## 📂 폴더 구조
 
 ```
@@ -98,14 +182,16 @@ BIMHarness/
 ├── src/
 │   ├── agents/
 │   │   ├── agent_1_parser.py        # IFC → JSON 파싱
-│   │   ├── agent_2_interpreter.py   # 자연어 룰 → JSON (Claude)
+│   │   ├── agent_2_interpreter.py   # 자연어 룰 → JSON (Claude API)
 │   │   ├── agent_3_validator.py     # JSON 룰 검증
 │   │   ├── agent_4_autofix.py       # 화이트리스트 자동 수정
-│   │   └── agent_5_reporter.py      # 한국어 보고서 생성
+│   │   ├── agent_5_reporter.py      # 한국어 보고서 생성
+│   │   └── agent_ai.py              # AI Agent + Tools 모드 (Claude 의사결정)
 │   ├── utils/
 │   │   ├── env_loader.py            # .env 자동 로드
 │   │   └── compare_ifc.py           # 원본/수정 비교
-│   └── main.py                      # 통합 파이프라인
+│   ├── main.py                      # 통합 파이프라인
+│   └── mcp_server.py                # MCP 서버 (Claude Desktop/Cursor 연동)
 │
 ├── bimsample/                       # 공개 샘플 + 룰셋
 │   ├── SimpleWall.ifc
