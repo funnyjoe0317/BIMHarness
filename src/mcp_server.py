@@ -33,6 +33,7 @@ from src.agents.agent_3_validator import validate
 from src.agents.agent_4_autofix import apply_fixes as run_apply_fixes
 from src.agents.agent_5_reporter import generate_report as run_generate_report
 from src.agents.agent_ai import run as run_ai_agent
+from src.agents.agent_ai_react import run_react_agent
 
 
 mcp = FastMCP("bimharness")
@@ -309,6 +310,47 @@ def ai_agent_mode(
         "output_ifc": result.get("output_ifc"),
         "report_path": result.get("report_path"),
     }
+
+
+# ============================================
+# 도구 8: ai_react_agent (ReAct Tool Use 패턴)
+# ============================================
+
+@mcp.tool()
+def ai_react_agent(
+    ifc_path: str,
+    output_ifc_path: str = None,
+    user_request: str = None,
+) -> dict:
+    """ReAct AI Agent — Claude가 도구를 자율적으로 N번 호출하며 IFC 처리.
+
+    옵션 F: Anthropic Tool Use API 기반. 산업 표준 Agentic 패턴.
+
+    호출 흐름:
+      1. Claude → list_walls (벽 목록 확인)
+      2. Claude → fix_thickness/fix_firerating/fix_material (위반마다)
+      3. Claude → save_ifc (마지막)
+
+    Claude API 호출 횟수는 위반 사항에 따라 동적 (N+1번).
+
+    Args:
+        ifc_path: IFC 경로
+        output_ifc_path: 출력 경로 (기본: samples/{name}_fixed.ifc)
+        user_request: 사용자 자연어 명령 (기본: 한국 화재 룰 적용)
+
+    Returns:
+        Claude API 호출 횟수, 도구 호출 내역, 출력 IFC 경로
+    """
+    if not Path(ifc_path).exists():
+        return {"error": f"IFC 없음: {ifc_path}"}
+
+    result = run_react_agent(
+        ifc_path=ifc_path,
+        output_path=output_ifc_path,
+        user_request=user_request,
+        verbose=False,  # MCP에선 silent
+    )
+    return result
 
 
 # ============================================
