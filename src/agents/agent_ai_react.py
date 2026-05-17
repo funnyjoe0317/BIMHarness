@@ -293,40 +293,79 @@ class IFCToolbox:
 # ReAct 루프
 # ============================================
 
-SYSTEM_PROMPT = """너는 한국 건축법/소방법 BIM 검증 전문 AI 에이전트다.
+SYSTEM_PROMPT = """너는 BIM 검증 AI 에이전트다.
 
-사용자가 IFC 파일을 주면 다음 절차로 처리한다:
-1. list_walls 도구로 벽 목록 확인
-2. 한국 화재 안전 표준에 따라 위반 벽 식별:
-   - 외벽(is_external=true) 두께 500mm 미만 → fix_thickness로 500mm 설정
-   - FireRating이 None/비표준 → fix_firerating으로 "2HR" 설정
-   - 자재가 None/비-Concrete → fix_material로 "Concrete" + 색깔 [1.0, 0.0, 0.0](빨강) 설정
-3. 모든 수정 후 save_ifc로 저장
-4. 한국어로 작업 결과 요약
+역할:
+- 사용자가 제공한 룰셋(JSON)을 읽고 IFC를 검사
+- 위반 사항 찾으면 적절한 도구로 수정
+- 모든 작업 후 save_ifc 호출
+
+작업 절차:
+1. list_walls 도구로 벽 목록 + 속성 확인
+2. 사용자 룰셋과 비교해 위반 벽 식별
+3. 룰의 fix 명세대로 수정 도구 호출:
+   - 두께 변경: fix_thickness
+   - FireRating 설정: fix_firerating
+   - 자재/색 변경: fix_material
+4. save_ifc로 저장
+5. 한국어로 결과 요약
 
 규칙:
-- 한 번에 한 도구씩 호출. 결과 확인 후 다음 결정.
-- 위반 없으면 그냥 save_ifc 후 종료
-- 모든 도구 호출은 정확한 GUID 사용
+- 룰의 기준값은 사용자가 정함. 너는 그 기준 따라 판단만.
+- 정확한 GUID 사용
+- 위반 0건이면 그냥 save_ifc 후 종료
 """
+
+
+def _format_rules_for_prompt(rules_compiled: list[dict]) -> str:
+    """룰셋을 Claude가 읽기 좋은 형식으로 변환"""
+    lines = []
+    for r in rules_compiled:
+        if r.get("target") != "IfcWall":
+            continue  # 지금 도구는 벽만 지원
+        check = r.get("check", {})
+        fix = r.get("fix") or {}
+        lines.append(
+            f"- {r['id']} ({r.get('name', '')}): "
+            f"check={check}, fix={fix}, "
+            f"severity={r.get('severity', '')}, "
+            f"auto_fixable={r.get('auto_fixable', False)}"
+        )
+    return "\n".join(lines) if lines else "(룰 없음)"
 
 
 def run_react_agent(
     ifc_path: str,
     output_path: Optional[str] = None,
     user_request: Optional[str] = None,
+    rules_compiled_path: str = "samples/rules_compiled.json",
     verbose: bool = True,
 ) -> dict:
-    """ReAct 루프 실행"""
+    """ReAct 루프 실행
+
+    Args:
+        ifc_path: IFC 파일 경로
+        output_path: 출력 IFC 경로
+        user_request: 사용자 자연어 명령 (없으면 기본 메시지 + 룰셋 자동 첨부)
+        rules_compiled_path: 컴파일된 룰 JSON (Claude 컨텍스트로 사용)
+        verbose: 진행 상황 출력 여부
+    """
     if output_path is None:
         base = Path(ifc_path).stem
         output_path = f"samples/{base}_fixed.ifc"
 
+    # 룰 로드
+    rules_text = "(룰셋 없음 - 일반 화재 안전 표준 적용)"
+    if Path(rules_compiled_path).exists():
+        rules = json.loads(Path(rules_compiled_path).read_text(encoding="utf-8"))
+        rules_text = _format_rules_for_prompt(rules)
+
     if user_request is None:
         user_request = (
-            f"이 IFC 파일을 한국 건축법 화재 안전 표준으로 검사하고 수정해줘. "
-            f"수정 완료 후 '{output_path}'로 저장. "
-            f"IFC 경로: {ifc_path}"
+            f"다음 룰셋으로 IFC를 검사하고 수정해줘.\n\n"
+            f"룰셋 (한국 건축법/소방법):\n{rules_text}\n\n"
+            f"IFC 경로: {ifc_path}\n"
+            f"수정 완료 후 '{output_path}'로 저장."
         )
 
     print("\n" + "═" * 60)
