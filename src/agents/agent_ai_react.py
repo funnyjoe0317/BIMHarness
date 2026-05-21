@@ -72,6 +72,21 @@ TOOLS = [
         },
     },
     {
+        "name": "fix_height",
+        "description": (
+            "특정 벽의 높이를 변경합니다 (IfcExtrudedAreaSolid.Depth). "
+            "단위 mm. IFC 단위 자동 변환. 시각 변화가 큼."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "guid": {"type": "string", "description": "벽의 GlobalId"},
+                "height_mm": {"type": "number", "description": "새 높이 (mm)"},
+            },
+            "required": ["guid", "height_mm"],
+        },
+    },
+    {
         "name": "fix_firerating",
         "description": "특정 벽의 Pset_WallCommon.FireRating 값을 설정합니다.",
         "input_schema": {
@@ -190,6 +205,27 @@ class IFCToolbox:
             "changed_items": changed,
         }
 
+    def fix_height(self, guid: str, height_mm: float) -> dict:
+        """벽 높이 변경 (IfcExtrudedAreaSolid.Depth)"""
+        wall = self.ifc.by_guid(guid)
+        if not wall:
+            return {"status": "error", "reason": f"guid 없음: {guid}"}
+
+        new_value = height_mm / 1000.0 / self.unit_scale
+        changed = 0
+        if wall.Representation:
+            for rep in wall.Representation.Representations:
+                for item in rep.Items:
+                    if item.is_a("IfcExtrudedAreaSolid"):
+                        item.Depth = new_value
+                        changed += 1
+        return {
+            "status": "success" if changed else "skipped",
+            "guid": guid,
+            "new_height_mm": height_mm,
+            "changed_items": changed,
+        }
+
     def fix_firerating(self, guid: str, rating: str) -> dict:
         """FireRating Pset 설정"""
         wall = self.ifc.by_guid(guid)
@@ -305,6 +341,7 @@ SYSTEM_PROMPT = """너는 BIM 검증 AI 에이전트다.
 2. 사용자 룰셋과 비교해 위반 벽 식별
 3. 룰의 fix 명세대로 수정 도구 호출:
    - 두께 변경: fix_thickness
+   - 높이 변경: fix_height
    - FireRating 설정: fix_firerating
    - 자재/색 변경: fix_material
 4. save_ifc로 저장
@@ -381,6 +418,7 @@ def run_react_agent(
     tool_handlers = {
         "list_walls": toolbox.list_walls,
         "fix_thickness": toolbox.fix_thickness,
+        "fix_height": toolbox.fix_height,
         "fix_firerating": toolbox.fix_firerating,
         "fix_material": toolbox.fix_material,
         "save_ifc": toolbox.save_ifc,

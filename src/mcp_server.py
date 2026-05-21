@@ -103,24 +103,41 @@ def list_rules(rules_md_path: str) -> dict:
 def validate_ifc(
     ifc_path: str,
     rules_compiled_path: str = "samples/rules_compiled.json",
+    violations_output: str = "samples/violations.json",
 ) -> dict:
-    """IFC 파일을 컴파일된 룰셋으로 검증합니다.
+    """IFC 파일을 컴파일된 룰셋으로 검증하고 결과를 violations.json에 저장합니다.
+
+    중요: 검증 결과를 violations_output에 저장하므로, 이어서 apply_fixes를
+    호출하면 이 검증 결과(올바른 룰셋)를 그대로 사용합니다.
 
     Args:
         ifc_path: 검증할 IFC 파일 경로
         rules_compiled_path: 컴파일된 룰 JSON 경로 (Agent 2 출력)
+        violations_output: 위반 사항 저장 경로 (apply_fixes가 읽음)
 
     Returns:
-        총 위반 건수, 룰별 통계, 위반 목록 (요약)
+        총 위반 건수, 룰별 통계, 위반 목록 (요약), 저장 경로
     """
+    import sys
     if not Path(ifc_path).exists():
         return {"error": f"IFC 파일 없음: {ifc_path}"}
     if not Path(rules_compiled_path).exists():
         return {"error": f"룰 파일 없음: {rules_compiled_path}. compile_rules 먼저 실행 필요."}
 
+    print(f"[validate_ifc] 파싱 시작: {ifc_path}", file=sys.stderr)
     parsed = parse_ifc(ifc_path)
+    print(f"[validate_ifc] 파싱 완료: {parsed.get('total_entities', 0)} 엔티티, "
+          f"벽 {len(parsed.get('walls', []))}개", file=sys.stderr)
+
     compiled_rules = json.loads(Path(rules_compiled_path).read_text(encoding="utf-8"))
     result = validate(parsed, compiled_rules)
+    print(f"[validate_ifc] 검증 완료: 위반 {result.get('total_violations', 0)}건", file=sys.stderr)
+
+    # 위반 사항 저장 → apply_fixes가 이걸 읽음 (룰셋 흐름 정상화)
+    Path(violations_output).write_text(
+        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"[validate_ifc] 저장: {violations_output}", file=sys.stderr)
 
     return {
         "ifc": ifc_path,
@@ -129,6 +146,7 @@ def validate_ifc(
         "total_violations": result.get("total_violations", 0),
         "rule_summary": result.get("rule_summary", {}),
         "violations_sample": result.get("violations", [])[:10],
+        "violations_saved_to": violations_output,
     }
 
 
@@ -192,6 +210,7 @@ def apply_fixes(
     Returns:
         수정 성공/실패 수, 출력 파일 경로, SHA-256 해시
     """
+    import sys
     if not Path(ifc_path).exists():
         return {"error": f"IFC 파일 없음: {ifc_path}"}
     if not Path(violations_path).exists():
@@ -201,12 +220,19 @@ def apply_fixes(
         base = Path(ifc_path).stem
         output_ifc_path = f"samples/{base}_fixed.ifc"
 
+    # 진행 로그 (Claude Desktop 로그 파일에 기록 — 타임아웃 시 진행 확인용)
+    vio_count = len(json.loads(Path(violations_path).read_text(encoding="utf-8")).get("violations", []))
+    print(f"[apply_fixes] 시작: {ifc_path} ({vio_count}건 위반)", file=sys.stderr)
+    print(f"[apply_fixes] 대용량 IFC는 write에 수 분 소요 (58만 엔티티 ≈ 2~4분)", file=sys.stderr)
+
     log = run_apply_fixes(
         ifc_path=ifc_path,
         violations_path=violations_path,
         output_ifc_path=output_ifc_path,
         changes_log_path=changes_log_path,
     )
+    print(f"[apply_fixes] 완료: {output_ifc_path}, "
+          f"수정 {log.get('auto_fixed', 0)}건", file=sys.stderr)
 
     return {
         "output_ifc": output_ifc_path,
@@ -357,6 +383,7 @@ def ai_agent_mode(
 @silent
 def ai_react_agent(
     ifc_path: str,
+    rules_compiled_path: str = "samples/rules_compiled.json",
     output_ifc_path: str = None,
     user_request: str = None,
 ) -> dict:
@@ -366,24 +393,30 @@ def ai_react_agent(
 
     호출 흐름:
       1. Claude → list_walls (벽 목록 확인)
-      2. Claude → fix_thickness/fix_firerating/fix_material (위반마다)
+      2. Claude → fix_thickness/fix_height/fix_firerating/fix_material (위반마다)
       3. Claude → save_ifc (마지막)
 
     Claude API 호출 횟수는 위반 사항에 따라 동적 (N+1번).
 
     Args:
         ifc_path: IFC 경로
+        rules_compiled_path: 컴파일된 룰 JSON 경로.
+            - 화재 안전: samples/rules_compiled.json
+            - 시각 데모: samples/rules_compiled_demo.json (두께/높이/색 강조)
         output_ifc_path: 출력 경로 (기본: samples/{name}_fixed.ifc)
-        user_request: 사용자 자연어 명령 (기본: 한국 화재 룰 적용)
+        user_request: 사용자 자연어 명령 (기본: 룰셋 자동 적용)
 
     Returns:
         Claude API 호출 횟수, 도구 호출 내역, 출력 IFC 경로
     """
     if not Path(ifc_path).exists():
         return {"error": f"IFC 없음: {ifc_path}"}
+    if not Path(rules_compiled_path).exists():
+        return {"error": f"룰 없음: {rules_compiled_path}"}
 
     result = run_react_agent(
         ifc_path=ifc_path,
+        rules_compiled_path=rules_compiled_path,
         output_path=output_ifc_path,
         user_request=user_request,
         verbose=False,  # MCP에선 silent
