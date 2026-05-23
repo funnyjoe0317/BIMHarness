@@ -138,6 +138,20 @@ TOOLS = [
 # 도구 구현 (Python — Claude가 호출)
 # ============================================
 
+def _find_extruded_solids(item):
+    """IfcExtrudedAreaSolid를 찾음. IfcBooleanClippingResult(잘린 벽) 내부도 재귀 탐색."""
+    if item is None:
+        return []
+    if item.is_a("IfcExtrudedAreaSolid"):
+        return [item]
+    if item.is_a("IfcBooleanClippingResult"):
+        # 잘린 벽: FirstOperand 안에 원본 솔리드가 있음
+        return _find_extruded_solids(item.FirstOperand)
+    if item.is_a("IfcBooleanResult"):
+        return _find_extruded_solids(item.FirstOperand)
+    return []
+
+
 class IFCToolbox:
     """IFC 조작 도구 모음. Claude가 호출함."""
 
@@ -161,8 +175,8 @@ class IFCToolbox:
                 ydim = None
                 for rep in (wall.Representation.Representations if wall.Representation else []):
                     for item in rep.Items:
-                        if item.is_a("IfcExtrudedAreaSolid"):
-                            p = item.SweptArea
+                        for solid in _find_extruded_solids(item):  # Clipping 내부도 탐색
+                            p = solid.SweptArea
                             if p.is_a("IfcRectangleProfileDef"):
                                 ydim = p.YDim * self.unit_scale * 1000  # mm
                                 break
@@ -195,9 +209,10 @@ class IFCToolbox:
         if wall.Representation:
             for rep in wall.Representation.Representations:
                 for item in rep.Items:
-                    if item.is_a("IfcExtrudedAreaSolid") and item.SweptArea.is_a("IfcRectangleProfileDef"):
-                        item.SweptArea.YDim = new_value
-                        changed += 1
+                    for solid in _find_extruded_solids(item):  # Clipping 내부도
+                        if solid.SweptArea.is_a("IfcRectangleProfileDef"):
+                            solid.SweptArea.YDim = new_value
+                            changed += 1
         return {
             "status": "success" if changed else "skipped",
             "guid": guid,
@@ -216,8 +231,8 @@ class IFCToolbox:
         if wall.Representation:
             for rep in wall.Representation.Representations:
                 for item in rep.Items:
-                    if item.is_a("IfcExtrudedAreaSolid"):
-                        item.Depth = new_value
+                    for solid in _find_extruded_solids(item):  # Clipping 내부도
+                        solid.Depth = new_value
                         changed += 1
         return {
             "status": "success" if changed else "skipped",
