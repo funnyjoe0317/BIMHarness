@@ -1,0 +1,5 @@
+# 개발/테스트 전용 (런타임 requirements.txt 와 분리)
+#   .venv/bin/pip install -r requirements-dev.txt
+#   .venv/bin/python -m pytest tests/ -v
+-r requirements.txt
+pytest==8.3.4
