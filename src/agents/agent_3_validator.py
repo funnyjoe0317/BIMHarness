@@ -160,6 +160,11 @@ def _passes_filter(elem: dict, filter_spec: Optional[dict]) -> bool:
     if filter_spec is None:
         return True
 
+    # LLM이 filter를 문자열로 컴파일하는 경우 ("all", "*" 등) → 필터 없음(전부 통과)
+    # (로컬 Ollama 모델이 md의 "filter: all"을 그대로 문자열로 내보냄)
+    if not isinstance(filter_spec, dict):
+        return True
+
     # Claude가 다양한 키로 컴파일할 수 있어서 호환 처리
     # 형식 1: {"type": "or", "conditions": [...]}
     # 형식 2: {"condition": "OR", "rules": [...]}

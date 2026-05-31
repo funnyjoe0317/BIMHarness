@@ -97,8 +97,11 @@ def _apply_pset_set_value(ifc, guid: str, fix_spec: dict) -> dict:
     if element is None:
         return {"status": "error", "reason": f"GUID 없음: {guid}"}
 
-    pset_name = fix_spec["pset"]
-    field = fix_spec["field"]
+    # LLM이 pset/field를 빼먹을 수 있음 (특히 로컬 소형 모델) → 크래시 대신 에러 기록
+    pset_name = fix_spec.get("pset")
+    field = fix_spec.get("field")
+    if not pset_name or not field:
+        return {"status": "error", "reason": f"fix_spec에 pset/field 없음: {fix_spec}"}
     # "value" 또는 "default_value" 둘 다 지원 (Claude 출력 다양성)
     new_value = fix_spec.get("value") or fix_spec.get("default_value")
     if new_value is None:

@@ -46,8 +46,8 @@ def parse_rules_md(md_path: str) -> list[dict]:
     """
     text = Path(md_path).read_text(encoding="utf-8")
 
-    # "## R{영숫자_조합}." 패턴 — R1, R_F1, R_MD1 등 모두 매칭
-    id_pattern = r'R[A-Za-z0-9_]*\d+'
+    # "## {대문자}...{숫자}." 패턴 — R1, R_F1, R_MD1, D_V1 등 모두 매칭
+    id_pattern = r'[A-Z][A-Za-z0-9_]*\d+'
     sections = re.split(rf'(?=^## {id_pattern}\.)', text, flags=re.MULTILINE)
 
     rules = []
@@ -59,8 +59,8 @@ def parse_rules_md(md_path: str) -> list[dict]:
         rule_id = match.group(1)
         title = match.group(2).strip()
 
-        # 룰 ID는 R로 시작 + 숫자로 끝나야 함 (가이드 섹션 제외)
-        if rule_id.startswith("R") and rule_id[-1].isdigit():
+        # 룰 ID는 대문자로 시작 + 숫자로 끝나야 함 (가이드 섹션 제외)
+        if rule_id[:1].isupper() and rule_id[-1].isdigit():
             rules.append({
                 "id": rule_id,
                 "title": title,
@@ -207,6 +207,61 @@ def compile_rule_via_ollama(
         return _extract_json(content)
     except json.JSONDecodeError as e:
         raise ValueError(f"Ollama가 invalid JSON 반환:\n{e}\n\n원문:\n{content}")
+
+
+# ============================================
+# 2-c. LangChain + 구조화 출력 (provider 무관)
+# ============================================
+# with_structured_output가 출력 스키마를 강제 → 소형 로컬 모델의 'JSON 꼬리 깨짐'
+# (raw Ollama에서 R5가 실패한 원인)을 프레임워크 레벨에서 방지.
+# provider로 클라우드(claude) ↔ 온프레미스(ollama) 선택.
+
+def compile_rule_via_langchain(
+    rule_raw: dict,
+    provider: str = "claude",
+    model: str = None,
+    host: str = None,
+) -> dict:
+    """자연어 룰 → JSON (LangChain + structured output).
+
+    Args:
+        rule_raw: parse_rules_md 결과
+        provider: "claude"(클라우드) | "ollama"(온프레미스 로컬)
+        model: ollama 모델명 (provider="ollama"일 때)
+        host: ollama 서버 주소
+    """
+    from typing import Optional
+    from pydantic import BaseModel, Field
+
+    class _Rule(BaseModel):
+        """LLM이 이 스키마에 맞춰서만 출력하도록 강제 (JSON 깨짐 방지)."""
+        id: str = Field(description="룰 ID (예: R1, R_F1)")
+        name: str = Field(default="", description="룰 제목")
+        category: str = Field(default="", description="한국 건축법 / 사내 표준 등")
+        target: str = Field(description="IFC 클래스 (예: IfcWall, IfcStair)")
+        filter: Optional[dict] = Field(default=None, description="대상 필터 또는 null")
+        check: dict = Field(description="검사 명세 (type/operator/value 등)")
+        fix: Optional[dict] = Field(default=None, description="수정 명세 또는 null")
+        severity: str = Field(default="Medium", description="Low | Medium | High")
+        auto_fixable: bool = Field(default=False)
+        reference: str = Field(default="", description="법 조항")
+        needs_llm: bool = Field(default=False)
+
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
+        m = model or os.environ.get("OLLAMA_MODEL") or OLLAMA_DEFAULT_MODEL
+        h = (host or os.environ.get("OLLAMA_HOST") or OLLAMA_DEFAULT_HOST).rstrip("/")
+        llm = ChatOllama(model=m, base_url=h, temperature=0)
+    else:
+        from langchain_anthropic import ChatAnthropic
+        llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0, max_tokens=2048)
+
+    structured = llm.with_structured_output(_Rule)
+    result = structured.invoke([
+        ("system", SYSTEM_PROMPT),
+        ("human", _user_prompt(rule_raw)),
+    ])
+    return result.model_dump()
 
 
 # ============================================
@@ -452,14 +507,22 @@ def compile_all(
     compilers = {
         "claude": compile_rule_via_claude,
         "ollama": lambda raw: compile_rule_via_ollama(raw, model=model),
+        "langchain": lambda raw: compile_rule_via_langchain(raw, provider="claude"),
+        "langchain-ollama": lambda raw: compile_rule_via_langchain(raw, provider="ollama", model=model),
         "mock": compile_rule_mock,
     }
     if backend not in compilers:
-        raise ValueError(f"알 수 없는 backend: {backend} (claude | ollama | mock)")
+        raise ValueError(
+            f"알 수 없는 backend: {backend} "
+            f"(claude | ollama | langchain | langchain-ollama | mock)"
+        )
 
+    _ollama_model = model or os.environ.get("OLLAMA_MODEL") or OLLAMA_DEFAULT_MODEL
     labels = {
         "claude": "클라우드 (Anthropic Claude)",
-        "ollama": f"온프레미스 로컬 LLM (Ollama / {model or os.environ.get('OLLAMA_MODEL') or OLLAMA_DEFAULT_MODEL})",
+        "ollama": f"온프레미스 로컬 LLM (Ollama / {_ollama_model})",
+        "langchain": "LangChain + 구조화출력 (Claude)",
+        "langchain-ollama": f"LangChain + 구조화출력 (Ollama / {_ollama_model})",
         "mock": "MOCK (API 없음)",
     }
     print("=" * 60)

@@ -1,0 +1,11 @@
+# RAG + LangChain 백엔드 전용 (무거워서 런타임 requirements.txt 와 분리)
+#   .venv-win\Scripts\pip install -r requirements-rag.txt
+#
+# 추가로 Ollama 모델 필요 (온프레미스):
+#   ollama pull nomic-embed-text     # 임베딩
+#   ollama pull qwen2.5:7b           # 답변/컴파일
+-r requirements.txt
+langchain-core>=1.0
+langchain-anthropic>=1.0
+langchain-ollama>=1.0
+voyageai>=0.3        # rag_demo.py (클라우드 임베딩) 용 — 온프레미스만 쓰면 불필요
