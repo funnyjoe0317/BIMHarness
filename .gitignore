@@ -21,6 +21,7 @@ __pycache__/
 *.so
 .Python
 .venv/
+.venv-win/
 venv/
 env/
 ENV/

@@ -159,32 +159,89 @@ def validate_ifc(
 def compile_rules(
     rules_md_path: str,
     output_path: str = "samples/rules_compiled.json",
+    backend: str = "claude",
+    model: str = None,
     mock: bool = False,
 ) -> dict:
-    """자연어 룰(.md)을 JSON으로 컴파일합니다 (Claude API 호출).
+    """자연어 룰(.md)을 JSON으로 컴파일합니다 (LLM 호출).
+
+    백엔드를 선택할 수 있습니다:
+      - "claude": Anthropic 클라우드 API (기본, 고품질)
+      - "ollama": 온프레미스 로컬 LLM — IFC/룰이 사내망 밖으로 안 나감 (보안)
+      - "mock":   API 없이 미리 정의된 결과 (테스트)
 
     Args:
         rules_md_path: 자연어 룰 마크다운 경로
         output_path: 컴파일 결과 저장 경로
-        mock: True면 API 호출 없이 mock 데이터 사용 (테스트용)
+        backend: "claude" | "ollama" | "mock"
+        model: ollama 백엔드일 때 모델명 (기본: llama3.1 / OLLAMA_MODEL)
+        mock: 하위호환 — True면 backend="mock"
 
     Returns:
-        컴파일된 룰 수, 출력 경로
+        컴파일된 룰 수, 사용한 백엔드, 출력 경로
     """
     if not Path(rules_md_path).exists():
         return {"error": f"파일 없음: {rules_md_path}"}
 
+    used_backend = "mock" if mock else backend
     compiled = compile_all(
         rules_md_path=rules_md_path,
         output_path=output_path,
+        backend=backend,
+        model=model,
         mock=mock,
     )
 
     return {
         "compiled_count": len(compiled),
+        "backend": used_backend,
         "output_path": output_path,
         "rule_ids": [r["id"] for r in compiled],
     }
+
+
+# ============================================
+# 도구 3-b: check_ollama (온프레미스 로컬 LLM 상태)
+# ============================================
+
+@mcp.tool()
+@silent
+def check_ollama(host: str = None) -> dict:
+    """온프레미스 로컬 LLM(Ollama) 서버 상태와 설치된 모델 목록을 확인합니다.
+
+    사내 보안망 데모용: 클라우드로 데이터를 보내지 않고 로컬 모델로
+    룰을 컴파일할 수 있는지 먼저 확인할 때 사용합니다.
+
+    Args:
+        host: Ollama 서버 주소 (기본: 환경변수 OLLAMA_HOST 또는 localhost:11434)
+
+    Returns:
+        available 여부, 서버 주소, 설치된 모델 목록
+    """
+    import os
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    host = (host or os.environ.get("OLLAMA_HOST")
+            or "http://localhost:11434").rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=5) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+        models = [m.get("name") for m in body.get("models", [])]
+        return {
+            "available": True,
+            "host": host,
+            "models": models,
+            "hint": "compile_rules(backend='ollama')로 클라우드 없이 컴파일 가능",
+        }
+    except urllib.error.URLError as e:
+        return {
+            "available": False,
+            "host": host,
+            "reason": str(e),
+            "hint": "로컬에서 'ollama serve' 실행 + 'ollama pull llama3.1' 필요",
+        }
 
 
 # ============================================

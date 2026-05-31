@@ -107,8 +107,24 @@ JSON 스키마:
 """
 
 
+def _user_prompt(rule_raw: dict) -> str:
+    """백엔드 공통 user 메시지"""
+    return f"이 룰을 JSON으로 변환:\n\n{rule_raw['raw_text']}"
+
+
+def _extract_json(text: str) -> dict:
+    """LLM 응답 텍스트에서 JSON 추출 (```json 펜스 제거 후 파싱).
+
+    Claude·Ollama 등 어떤 백엔드든 응답 후처리는 동일하므로 공통화.
+    """
+    s = text.strip()
+    s = re.sub(r'^```(?:json)?\n?', '', s)
+    s = re.sub(r'\n?```$', '', s)
+    return json.loads(s.strip())
+
+
 def compile_rule_via_claude(rule_raw: dict) -> dict:
-    """자연어 룰 → JSON (Claude API)"""
+    """자연어 룰 → JSON (Claude API, 클라우드)"""
     import anthropic
 
     client = anthropic.Anthropic()
@@ -117,24 +133,80 @@ def compile_rule_via_claude(rule_raw: dict) -> dict:
         model="claude-sonnet-4-6",
         max_tokens=2048,
         system=SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": f"이 룰을 JSON으로 변환:\n\n{rule_raw['raw_text']}"
-        }]
+        messages=[{"role": "user", "content": _user_prompt(rule_raw)}]
     )
 
-    json_str = response.content[0].text.strip()
+    text = response.content[0].text
+    try:
+        return _extract_json(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Claude가 invalid JSON 반환:\n{e}\n\n원문:\n{text}")
 
-    # ```json ... ``` 마크다운 제거
-    json_str = re.sub(r'^```(?:json)?\n?', '', json_str)
-    json_str = re.sub(r'\n?```$', '', json_str)
+
+# ============================================
+# 2-b. Ollama 호출 (온프레미스 로컬 LLM)
+# ============================================
+# 클라우드(Anthropic)로 IFC/룰을 보낼 수 없는 사내 보안망용.
+# Claude 경로와 동일한 SYSTEM_PROMPT·출력 스키마 사용 → 드롭인 교체.
+# HTTP는 urllib(stdlib)만 사용 — 새 의존성 없음.
+
+OLLAMA_DEFAULT_HOST = "http://localhost:11434"
+OLLAMA_DEFAULT_MODEL = "llama3.1"
+
+
+def compile_rule_via_ollama(
+    rule_raw: dict,
+    model: str = None,
+    host: str = None,
+) -> dict:
+    """자연어 룰 → JSON (로컬 Ollama LLM, 온프레미스).
+
+    Args:
+        rule_raw: parse_rules_md가 만든 {id, title, raw_text}
+        model: Ollama 모델명 (기본: 환경변수 OLLAMA_MODEL 또는 llama3.1)
+        host: Ollama 서버 (기본: 환경변수 OLLAMA_HOST 또는 localhost:11434)
+    """
+    import urllib.request
+    import urllib.error
+
+    model = model or os.environ.get("OLLAMA_MODEL") or OLLAMA_DEFAULT_MODEL
+    host = (host or os.environ.get("OLLAMA_HOST") or OLLAMA_DEFAULT_HOST).rstrip("/")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": _user_prompt(rule_raw)},
+        ],
+        "stream": False,
+        "format": "json",          # Ollama가 valid JSON만 출력하도록 강제
+        "options": {"temperature": 0},
+    }
+    req = urllib.request.Request(
+        f"{host}/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
 
     try:
-        return json.loads(json_str.strip())
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Ollama 서버 연결 실패 ({host}). 로컬 LLM이 실행 중인지 확인하세요:\n"
+            f"  1) ollama serve              # 서버 실행\n"
+            f"  2) ollama pull {model}   # 모델 다운로드\n"
+            f"  원인: {e}"
+        ) from e
+
+    content = (body.get("message") or {}).get("content", "")
+    if not content:
+        raise ValueError(f"Ollama 빈 응답: {body}")
+
+    try:
+        return _extract_json(content)
     except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Claude가 invalid JSON 반환:\n{e}\n\n원문:\n{json_str}"
-        )
+        raise ValueError(f"Ollama가 invalid JSON 반환:\n{e}\n\n원문:\n{content}")
 
 
 # ============================================
@@ -364,10 +436,34 @@ def compile_all(
     rules_md_path: str = "samples/rules_korean_law.md",
     output_path: str = "samples/rules_compiled.json",
     mock: bool = False,
+    backend: str = "claude",
+    model: str = None,
 ) -> list[dict]:
-    """전체 룰 컴파일"""
+    """전체 룰 컴파일
+
+    Args:
+        backend: "claude" (클라우드) | "ollama" (온프레미스 로컬) | "mock" (테스트)
+        model:   ollama 백엔드일 때 모델명 (기본: llama3.1 / OLLAMA_MODEL)
+        mock:    하위호환 — True면 backend="mock"
+    """
+    if mock:
+        backend = "mock"
+
+    compilers = {
+        "claude": compile_rule_via_claude,
+        "ollama": lambda raw: compile_rule_via_ollama(raw, model=model),
+        "mock": compile_rule_mock,
+    }
+    if backend not in compilers:
+        raise ValueError(f"알 수 없는 backend: {backend} (claude | ollama | mock)")
+
+    labels = {
+        "claude": "클라우드 (Anthropic Claude)",
+        "ollama": f"온프레미스 로컬 LLM (Ollama / {model or os.environ.get('OLLAMA_MODEL') or OLLAMA_DEFAULT_MODEL})",
+        "mock": "MOCK (API 없음)",
+    }
     print("=" * 60)
-    print(f"📖 Agent 2: 룰 컴파일 시작 {'(MOCK)' if mock else '(REAL API)'}")
+    print(f"📖 Agent 2: 룰 컴파일 시작 — {labels[backend]}")
     print("=" * 60)
 
     raw_rules = parse_rules_md(rules_md_path)
@@ -379,7 +475,7 @@ def compile_all(
     print("컴파일 시작")
     print("=" * 60)
 
-    compiler = compile_rule_mock if mock else compile_rule_via_claude
+    compiler = compilers[backend]
     compiled = []
 
     try:
@@ -412,5 +508,24 @@ def compile_all(
 
 
 if __name__ == "__main__":
-    mock = "--mock" in sys.argv
-    compile_all(mock=mock)
+    args = sys.argv[1:]
+
+    # 백엔드 선택: --mock | --ollama | --backend <name>
+    backend = "claude"
+    if "--mock" in args:
+        backend = "mock"
+    if "--ollama" in args:
+        backend = "ollama"
+    if "--backend" in args:
+        i = args.index("--backend")
+        if i + 1 < len(args):
+            backend = args[i + 1]
+
+    # --model <name> (ollama 모델 지정)
+    model = None
+    if "--model" in args:
+        i = args.index("--model")
+        if i + 1 < len(args):
+            model = args[i + 1]
+
+    compile_all(backend=backend, model=model)

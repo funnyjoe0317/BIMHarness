@@ -33,13 +33,25 @@ def run_pipeline(
     output_dir: str = "samples",
     mock: bool = False,
     skip_compile: bool = False,
+    backend: str = "claude",
+    model: str = None,
 ) -> dict:
-    """전체 BIMHarness 파이프라인"""
+    """전체 BIMHarness 파이프라인
+
+    backend: 룰 컴파일 LLM — "claude"(클라우드) | "ollama"(온프레미스) | "mock"
+    """
+    if mock:
+        backend = "mock"
+    backend_label = {
+        "claude": "REAL API (Anthropic 클라우드)",
+        "ollama": "온프레미스 (Ollama 로컬)",
+        "mock": "MOCK",
+    }.get(backend, backend)
     print("\n" + "█" * 60)
     print(f"  BIMHarness — BIM 자동 검증·수정 시스템")
     print(f"  입력 IFC: {ifc_path}")
     print(f"  룰 파일: {rules_md_path}")
-    print(f"  모드: {'MOCK' if mock else 'REAL API'}")
+    print(f"  컴파일 백엔드: {backend_label}")
     print("█" * 60)
 
     # 경로 설정
@@ -62,7 +74,8 @@ def run_pipeline(
         agent_2_interpreter.compile_all(
             rules_md_path=rules_md_path,
             output_path=rules_compiled_path,
-            mock=mock,
+            backend=backend,
+            model=model,
         )
 
     # ============================================
@@ -155,6 +168,20 @@ if __name__ == "__main__":
     mock = "--mock" in args
     skip_compile = "--skip-compile" in args
 
+    # 컴파일 백엔드: --ollama | --backend <name>
+    backend = "claude"
+    if "--ollama" in args:
+        backend = "ollama"
+    if "--backend" in args:
+        i = args.index("--backend")
+        if i + 1 < len(args):
+            backend = args[i + 1]
+    model = None
+    if "--model" in args:
+        i = args.index("--model")
+        if i + 1 < len(args):
+            model = args[i + 1]
+
     # --rules <경로> 옵션 처리
     rules_md_path = "samples/rules_korean_law.md"
     if "--rules" in args:
@@ -163,13 +190,15 @@ if __name__ == "__main__":
             rules_md_path = args[idx + 1]
 
     # IFC 경로 (--로 시작하지 않는 첫 인자, --rules의 값 제외)
+    # 값을 받는 플래그들 (다음 인자를 IFC 경로로 오인하지 않게 건너뜀)
+    value_flags = {"--rules", "--backend", "--model"}
     skip_next = False
     ifc_args = []
     for a in args:
         if skip_next:
             skip_next = False
             continue
-        if a == "--rules":
+        if a in value_flags:
             skip_next = True
             continue
         if not a.startswith("--"):
@@ -181,4 +210,6 @@ if __name__ == "__main__":
         rules_md_path=rules_md_path,
         mock=mock,
         skip_compile=skip_compile,
+        backend=backend,
+        model=model,
     )
